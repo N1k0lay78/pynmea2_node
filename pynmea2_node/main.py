@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Int64
+from std_msgs.msg import Float64, Int64, String
 from geometry_msgs.msg import Twist
 # sudo apt install ros-iron-geographic-msgs
 from geographic_msgs.msg import GeoPoint  # GeoPoint.latitude, GeoPoint.longitude, GeoPoint.altitude
@@ -33,11 +33,13 @@ class NmeaReader(Node):
         }
 
         self.listen_types = {}
+        self.listen_raw_types = {}
 
         self.declare_parameter('port', rclpy.Parameter.Type.STRING) 
         self.declare_parameter('baudrate', rclpy.Parameter.Type.INTEGER)
         self.declare_parameter('hz', rclpy.Parameter.Type.INTEGER) 
         self.declare_parameter('messages', rclpy.Parameter.Type.STRING_ARRAY)
+        self.declare_parameter('raw_messages', rclpy.Parameter.Type.STRING_ARRAY)
 
         # подключаемся к порту
         port = self.get_parameter('port').value
@@ -45,9 +47,9 @@ class NmeaReader(Node):
         ser = serial.Serial(port, baudrate, timeout=5.0)
         self.serial_io = io.TextIOWrapper(io.BufferedRWPair(ser, ser))
 
-        messages = list(dict.fromkeys(self.get_parameter('messages').value)) # remove duplicates
+        messages = list(dict.fromkeys(map(lambda x: x.lower(), self.get_parameter('messages').value))) # remove duplicates and make lowercase
         for m in messages:
-            if m in all_types.keys() :
+            if m in all_types.keys():
                 msg_type = all_types[m]
                 pynmea2_type = msg_type[0]
                 if pynmea2_type not in self.listen_types.keys():
@@ -58,7 +60,16 @@ class NmeaReader(Node):
             else:
                 raise Exception("message type not found or such message is already being processed")
         
+        raw_messages = list(dict.fromkeys(map(lambda x: x.lower(), self.get_parameter('raw_messages').value))) # remove duplicates and make lowercase
+        for m in raw_messages:
+            if m in all_types:
+                self.listen_raw_types[all_types[m][0]] = self.create_publisher(String, f"{m}_raw",  1)  # gga_raw, dbt_raw, etc.
+            else:
+                raise Exception("message type not found or such message is already being processed")
+
         self.updater = self.create_timer(1 / self.get_parameter('hz').value, self.update)
+    
+
 
     # TODO другие обработчики сообщений сюда
 
@@ -106,6 +117,8 @@ class NmeaReader(Node):
                 # listen_types = {type(message): [ [publisher, sender], [..] ]}
                 for publisher, sender in self.listen_types[type(msg)]:
                     sender(msg, publisher)
+            elif type(msg) in self.listen_raw_types:
+                self.listen_raw_types[type(msg)].publish(line)
         except serial.SerialException as e:
             raise Exception(f'Device error: {e}')
         except pynmea2.ParseError as e:
