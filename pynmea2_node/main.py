@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, Int64
 from geometry_msgs.msg import Twist
 # sudo apt install ros-iron-geographic-msgs
 from geographic_msgs.msg import GeoPoint  # GeoPoint.latitude, GeoPoint.longitude, GeoPoint.altitude
@@ -11,23 +11,24 @@ import pynmea2
 import serial
 import io
 
-
+KNOTS_TO_M_PER_S = 0.514444 
+                       
 class NmeaReader(Node):
     def __init__(self):
         super().__init__('nmea_reader')
         
         # все поддерживаемые типы есть в pynmea2>types>talker.py (в VS можно перейти с зажатым ctrl и лкм по одному из типов)
         all_types = {
-            "dbt": [
-                [pynmea2.types.talker.DBT, "/DBT", Float64,  self.dbt_publisher],  # depth
-                ],
-            "gga": [
-                [pynmea2.types.talker.GGA, "/GGA", GeoPoint, self.gga_publisher],                    # lat lon alt
-                [pynmea2.types.talker.GGA, "/GGA_quality", GeoPoint, self.gga_quality_publisher],    # quality
-                ],
-            "rmc": [
-                [pynmea2.types.talker.RMC, "/RMC", Twist,    self.rmc_publisher],  # linear.x = SOG, angular.x = COG
-                ],
+            "dbt": [pynmea2.types.talker.DBT, [
+                ["DBT", Float64,  self.dbt_publisher],                    # depth
+                ]], 
+            "gga": [pynmea2.types.talker.GGA, [
+                ["GGA", GeoPoint, self.gga_publisher],                    # lat lon alt
+                ["GGA_quality", Int64, self.gga_quality_publisher],    # quality
+                ]],
+            "rmc": [pynmea2.types.talker.RMC, [
+                ["RMC", Twist,    self.rmc_publisher],  # linear.x = SOG, angular.x = COG
+                ]],
             # TODO добавить другие типы сообщений, которые будут нужны (ещё надо сделать обработчик)
         }
 
@@ -44,15 +45,16 @@ class NmeaReader(Node):
         ser = serial.Serial(port, baudrate, timeout=5.0)
         self.serial_io = io.TextIOWrapper(io.BufferedRWPair(ser, ser))
 
-        for message in self.get_parameter('messages').value:
-            # мы умеем обрабатывать такой тип и он ещё не создан
-            if message in all_types and all_types[message][0] not in self.listen_types:
-                # all_types = {message_name: [ [type(message), "/topic_name", TopicType, topic_sender], [..] ]}
-                for data in all_types[message]:
-                    if data[0] in self.listen_types:
-                        self.listen_types[data[0]].append([self.create_publisher(data[2], data[1],  1), data[3]])
-                    else:
-                        self.listen_types[data[0]] = [[self.create_publisher(data[2], data[1],  1), data[3]]]
+        messages = list(dict.fromkeys(self.get_parameter('messages').value)) # remove duplicates
+        for m in messages:
+            if m in all_types.keys() :
+                msg_type = all_types[m]
+                pynmea2_type = msg_type[0]
+                if pynmea2_type not in self.listen_types.keys():
+                    self.listen_types[pynmea2_type] = []
+                processors = self.listen_types[pynmea2_type]
+                for t in msg_type[1]:
+                    processors.append([self.create_publisher(t[1], t[0],  1), t[2]])
             else:
                 raise Exception("message type not found or such message is already being processed")
         
@@ -70,7 +72,7 @@ class NmeaReader(Node):
     @staticmethod
     def gga_quality_publisher(msg: pynmea2.types.talker.GGA, publisher):
         # gga - ~~координаты~~(перечёркнуто), качество сигнала
-        gps_qual = Float64()/100
+        gps_qual = Int64()
         gps_qual.data = msg.gps_qual
         publisher.publish(gps_qual)
     
@@ -87,8 +89,11 @@ class NmeaReader(Node):
     def rmc_publisher(msg: pynmea2.types.talker.RMC, publisher):
         # rmc - COG, SOG (скорость, курс)
         twist = Twist()
-        twist.linear.x = msg.spd_over_grnd
-        twist.angular.x = msg.true_course  # в float'ах
+        twist.linear.x = msg.spd_over_grnd * KNOTS_TO_M_PER_S
+        if msg.true_course is None:
+            twist.angular.x = 0.0
+        else:
+            twist.angular.x = msg.true_course # в float'ах
         publisher.publish(twist)
 
     def update(self):
