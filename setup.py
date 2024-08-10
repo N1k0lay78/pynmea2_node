@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            "nvmea_reader = pynmea2_node.main:main"
+            "nmea_reader = pynmea2_node.main:main"
         ],
     },
 )

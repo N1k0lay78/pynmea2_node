@@ -12,24 +12,30 @@ import serial
 import io
 
 
-class NvmeaReader(Node):
-    HZ = 30
-
+class NmeaReader(Node):
     def __init__(self):
-        super().__init__('nvmea_reader')
+        super().__init__('nmea_reader')
         
         # все поддерживаемые типы есть в pynmea2>types>talker.py (в VS можно перейти с зажатым ctrl и лкм по одному из типов)
         all_types = {
-            "dbt": [pynmea2.types.talker.DBT, "/DBT", Float64,  self.dbt_publisher],  # depth
-            "gga": [pynmea2.types.talker.GGA, "/GGA", GeoPoint, self.gga_publisher],  # lat lon alt
-            "rmc": [pynmea2.types.talker.RMC, "/RMC", Twist,    self.rmc_publisher],  # linear.x = SOG, angular.x = COG
+            "dbt": [
+                [pynmea2.types.talker.DBT, "/DBT", Float64,  self.dbt_publisher],  # depth
+                ],
+            "gga": [
+                [pynmea2.types.talker.GGA, "/GGA", GeoPoint, self.gga_publisher],                    # lat lon alt
+                [pynmea2.types.talker.GGA, "/GGA_quality", GeoPoint, self.gga_quality_publisher],    # quality
+                ],
+            "rmc": [
+                [pynmea2.types.talker.RMC, "/RMC", Twist,    self.rmc_publisher],  # linear.x = SOG, angular.x = COG
+                ],
             # TODO добавить другие типы сообщений, которые будут нужны (ещё надо сделать обработчик)
         }
 
         self.listen_types = {}
 
         self.declare_parameter('port', rclpy.Parameter.Type.STRING) 
-        self.declare_parameter('baudrate', rclpy.Parameter.Type.INTEGER) 
+        self.declare_parameter('baudrate', rclpy.Parameter.Type.INTEGER)
+        self.declare_parameter('hz', rclpy.Parameter.Type.INTEGER) 
         self.declare_parameter('messages', rclpy.Parameter.Type.STRING_ARRAY)
 
         # подключаемся к порту
@@ -41,13 +47,16 @@ class NvmeaReader(Node):
         for message in self.get_parameter('messages').value:
             # мы умеем обрабатывать такой тип и он ещё не создан
             if message in all_types and all_types[message][0] not in self.listen_types:
-                # all_types = {message_name: [type(message), "/topic_name", TopicType, topic_sender]}
-                data = all_types[message]
-                self.listen_types[data[0]] = [self.create_publisher(data[2], data[1],  1), data[3]]
+                # all_types = {message_name: [ [type(message), "/topic_name", TopicType, topic_sender], [..] ]}
+                for data in all_types[message]:
+                    if data[0] in self.listen_types:
+                        self.listen_types[data[0]].append([self.create_publisher(data[2], data[1],  1), data[3]])
+                    else:
+                        self.listen_types[data[0]] = [[self.create_publisher(data[2], data[1],  1), data[3]]]
             else:
                 raise Exception("message type not found or such message is already being processed")
         
-        self.updater = self.create_timer(1 / self.HZ, self.update)
+        self.updater = self.create_timer(1 / self.get_parameter('hz').value, self.update)
 
     # TODO другие обработчики сообщений сюда
 
@@ -57,7 +66,14 @@ class NvmeaReader(Node):
         depth = Float64()
         depth.data = msg.depth_meters
         publisher.publish(depth)
-
+    
+    @staticmethod
+    def gga_quality_publisher(msg: pynmea2.types.talker.GGA, publisher):
+        # gga - ~~координаты~~(перечёркнуто), качество сигнала
+        gps_qual = Float64()/100
+        gps_qual.data = msg.gps_qual
+        publisher.publish(gps_qual)
+    
     @staticmethod
     def gga_publisher(msg: pynmea2.types.talker.GGA, publisher):
         # gga - координаты, ~~качество сигнала~~(перечёркнуто). Для координат надо использовать сообщение GeoPoint
@@ -82,8 +98,9 @@ class NvmeaReader(Node):
             if type(msg) in self.listen_types:
                 # вызываем обработчик сообщений данного типа
                 # да, возможно это выглядит страшно)
-                # listen_types = {type(message): [publisher, sender]}
-                self.listen_types[type(msg)][1](msg, self.listen_types[type(msg)][0])
+                # listen_types = {type(message): [ [publisher, sender], [..] ]}
+                for publisher, sender in self.listen_types[type(msg)]:
+                    sender(msg, publisher)
         except serial.SerialException as e:
             raise Exception(f'Device error: {e}')
         except pynmea2.ParseError as e:
@@ -92,9 +109,9 @@ class NvmeaReader(Node):
 
 def main():
     rclpy.init()
-    nvmea_reader = NvmeaReader()
-    rclpy.spin(nvmea_reader)
-    nvmea_reader.destroy_node()
+    nmea_reader = NmeaReader()
+    rclpy.spin(nmea_reader)
+    nmea_reader.destroy_node()
     rclpy.shutdown()
 
 
