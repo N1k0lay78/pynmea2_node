@@ -63,7 +63,9 @@ class NmeaReader(Node):
         raw_messages = list(dict.fromkeys(map(lambda x: x.lower(), self.get_parameter('raw_messages').value))) # remove duplicates and make lowercase
         for m in raw_messages:
             if m in all_types:
-                self.listen_raw_types[all_types[m][0]] = self.create_publisher(String, f"{m}_raw",  1)  # gga_raw, dbt_raw, etc.
+                msg_type = all_types[m]
+                pynmea2_type = msg_type[0]
+                self.listen_raw_types[pynmea2_type] = self.create_publisher(String, f"{m}_raw",  1)  # gga_raw, dbt_raw, etc.
             else:
                 raise Exception("message type not found or such message is already being processed")
 
@@ -91,14 +93,14 @@ class NmeaReader(Node):
     def gga_publisher(msg: pynmea2.types.talker.GGA, publisher):
         # gga - координаты, ~~качество сигнала~~(перечёркнуто). Для координат надо использовать сообщение GeoPoint
         point = GeoPoint()
-        point.latitude = msg.longitude
-        point.longitude = msg.latitude
+        point.latitude = msg.latitude
+        point.longitude = msg.longitude
         point.altitude = msg.altitude
         publisher.publish(point)
 
     @staticmethod
     def rmc_publisher(msg: pynmea2.types.talker.RMC, publisher):
-        # rmc - COG, SOG (скорость, курс)
+        # rmc - SOG, COG (скорость, курс)
         twist = Twist()
         twist.linear.x = msg.spd_over_grnd * KNOTS_TO_M_PER_S
         if msg.true_course is None:
@@ -118,9 +120,9 @@ class NmeaReader(Node):
                 for publisher, sender in self.listen_types[type(msg)]:
                     sender(msg, publisher)
             elif type(msg) in self.listen_raw_types:
-                self.listen_raw_types[type(msg)].publish(line)
-        except serial.SerialException as e:
-            raise Exception(f'Device error: {e}')
+                s = String()
+                s.data = line
+                self.listen_raw_types[type(msg)].publish(s)
         except pynmea2.ParseError as e:
             self.get_logger().warn(f'Parse error: {e}')
 
